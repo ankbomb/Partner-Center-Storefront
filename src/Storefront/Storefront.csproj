@@ -92,8 +92,8 @@
       <HintPath>..\..\packages\Microsoft.Azure.Services.AppAuthentication.1.2.0\lib\net461\Microsoft.Azure.Services.AppAuthentication.dll</HintPath>
     </Reference>
     <Reference Include="Microsoft.CSharp" />
-    <Reference Include="Microsoft.Graph, Version=1.20.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
-      <HintPath>..\..\packages\Microsoft.Graph.1.20.0\lib\net45\Microsoft.Graph.dll</HintPath>
+    <Reference Include="Microsoft.Graph, Version=1.17.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
+      <HintPath>..\..\packages\Microsoft.Graph.1.17.0\lib\net45\Microsoft.Graph.dll</HintPath>
     </Reference>
     <Reference Include="Microsoft.Graph.Core, Version=1.17.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35, processorArchitecture=MSIL">
       <HintPath>..\..\packages\Microsoft.Graph.Core.1.17.0\lib\net45\Microsoft.Graph.Core.dll</HintPath>

@@ -143,9 +143,10 @@ namespace Microsoft.Store.PartnerCenter.Storefront.Controllers
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(HttpContext.Current.Request.Form["InstrumentationKey"]))
+            if (!string.IsNullOrWhiteSpace(HttpContext.Current.Request.Form["BillingCycle"])
+                && Enum.TryParse(HttpContext.Current.Request.Form["BillingCycle"], out BillingCycleType billingCycle))
             {
-                brandingConfiguration.InstrumentationKey = HttpContext.Current.Request.Form["InstrumentationKey"];
+                brandingConfiguration.BillingCycle = billingCycle;
             }
 
             BrandingConfiguration updatedBrandingConfiguration = await ApplicationDomain.Instance.PortalBranding.UpdateAsync(brandingConfiguration).ConfigureAwait(false);
@@ -170,7 +171,7 @@ namespace Microsoft.Store.PartnerCenter.Storefront.Controllers
         [HttpGet]
         public async Task<IEnumerable<PartnerOffer>> GetOffers()
         {
-            return (await ApplicationDomain.Instance.OffersRepository.RetrieveAsync().ConfigureAwait(false)).Where(offer => !offer.IsInactive);
+            return (await ApplicationDomain.Instance.OffersRepository.RetrieveAsync().ConfigureAwait(false)).OrderBy(o => o.DisplayIndex).Where(offer => !offer.IsInactive);
         }
 
         /// <summary>

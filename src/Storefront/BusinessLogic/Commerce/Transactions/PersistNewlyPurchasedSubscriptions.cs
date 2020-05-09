@@ -1,140 +1,272 @@
-﻿// -----------------------------------------------------------------------
-// <copyright file="PersistNewlyPurchasedSubscriptions.cs" company="Microsoft">
+// -----------------------------------------------------------------------
+// <copyright file="OrderNormalizer.cs" company="Microsoft">
 //      Copyright (c) Microsoft Corporation. All rights reserved.
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Microsoft.Store.PartnerCenter.Storefront.BusinessLogic.Commerce.Transactions
+namespace Microsoft.Store.PartnerCenter.Storefront.BusinessLogic.Commerce
 {
     using System;
     using System.Collections.Generic;
     using System.Linq;
     using System.Threading.Tasks;
-    using Infrastructure;
+    using Exceptions;
     using Models;
-    using PartnerCenter.Models.Orders;
 
     /// <summary>
-    /// A transaction which records all the resulting subscriptions of a Partner Center order into persistence. The customer subscriptions
-    /// and purchases tables will store the new subscriptions and their purchase history.
+    /// Implements the normalizers for orders. 
     /// </summary>
-    public class PersistNewlyPurchasedSubscriptions :
-        IBusinessTransactionWithInput<Tuple<Order, IEnumerable<PurchaseLineItemWithOffer>>>,
-        IBusinessTransactionWithOutput<IEnumerable<TransactionResultLineItem>>
+    public class OrderNormalizer : DomainObject
     {
         /// <summary>
-        /// An aggregate transaction which add all the subscriptions from an order to persistence.
+        /// Initializes a new instance of the <see cref="OrderNormalizer"/> class.
         /// </summary>
-        private IBusinessTransaction bulkSubscriptionPersistenceTransaction = null;
-
-        /// <summary>
-        /// Initializes a new instance of the <see cref="PersistNewlyPurchasedSubscriptions"/> class.
-        /// </summary>
-        /// <param name="customerId">The ID of the customer who performed the purchases.</param>
-        /// <param name="subscriptionsRepository">The customer subscriptions repository used to persist the subscriptions.</param>
-        /// <param name="purchasesRepository">The customer purchases repository used to persist the purchases.</param>
-        /// <param name="acquireInputsFunction">The function used to obtain the order and the list of purchase line items associated with their partner offers.</param>
-        public PersistNewlyPurchasedSubscriptions(
-            string customerId,
-            CustomerSubscriptionsRepository subscriptionsRepository,
-            CustomerPurchasesRepository purchasesRepository,
-            Func<Tuple<Order, IEnumerable<PurchaseLineItemWithOffer>>> acquireInputsFunction)
+        /// <param name="applicationDomain">An application domain instance.</param>
+        /// <param name="order">The order which will be normalized.</param>
+        public OrderNormalizer(ApplicationDomain applicationDomain, OrderViewModel order) : base(applicationDomain)
         {
-            customerId.AssertNotEmpty(nameof(customerId));
-            subscriptionsRepository.AssertNotNull(nameof(subscriptionsRepository));
-            purchasesRepository.AssertNotNull(nameof(purchasesRepository));
-            acquireInputsFunction.AssertNotNull(nameof(acquireInputsFunction));
+            order.AssertNotNull(nameof(order));
 
-            CustomerId = customerId;
-            CustomerSubscriptionsRepository = subscriptionsRepository;
-            CustomerPurchasesRepository = purchasesRepository;
-            AcquireInput = acquireInputsFunction;
+            Order = order;
         }
 
         /// <summary>
-        /// Gets the ID of the customer who owns the transaction.
+        /// Gets the Order instance.
         /// </summary>
-        public string CustomerId { get; private set; }
+        public OrderViewModel Order { get; private set; }
 
         /// <summary>
-        /// Gets the customer subscriptions repository used to persist the subscriptions.
-        /// </summary>
-        public CustomerSubscriptionsRepository CustomerSubscriptionsRepository { get; private set; }
-
-        /// <summary>
-        /// Gets the customer purchases repository used to persist the purchases.
-        /// </summary>
-        public CustomerPurchasesRepository CustomerPurchasesRepository { get; private set; }
-
-        /// <summary>
-        /// Gets the function used to obtain the order and the list of purchase line items associated with their partner offers.
-        /// </summary>
-        public Func<Tuple<Order, IEnumerable<PurchaseLineItemWithOffer>>> AcquireInput { get; private set; }
-
-        /// <summary>
-        /// Gets the result from running this transaction.
-        /// </summary>
-        public IEnumerable<TransactionResultLineItem> Result { get; private set; }
-
-        /// <summary>
-        /// Records all the resulting subscriptions as well as their initial purchase history into persistence.
-        /// </summary>
-        /// <returns>A task.</returns>
-        public async Task ExecuteAsync()
+        /// Normalizes an order to renew a subscription.
+        /// </summary>        
+        /// <returns>Normalized order.</returns>
+        public async Task<OrderViewModel> NormalizeRenewSubscriptionOrderAsync()
         {
-            Tuple<Order, IEnumerable<PurchaseLineItemWithOffer>> inputs = AcquireInput.Invoke();
-            Order partnerCenterPurchaseOrder = inputs.Item1;
-            IEnumerable<PurchaseLineItemWithOffer> purchaseLineItems = inputs.Item2;
-
-            ICollection<TransactionResultLineItem> transactionResultLineItems = new List<TransactionResultLineItem>();
-            ICollection<IBusinessTransaction> persistenceTransactions = new List<IBusinessTransaction>();
-
-            DateTime rightNow = DateTime.UtcNow;
-
-            foreach (OrderLineItem orderLineItem in partnerCenterPurchaseOrder.LineItems)
+            OrderViewModel order = Order;
+            order.CustomerId.AssertNotEmpty(nameof(order.CustomerId));
+            if (order.OperationType != CommerceOperationType.Renewal)
             {
-                PartnerOffer matchingPartnerOffer = purchaseLineItems.ElementAt(orderLineItem.LineItemNumber).PartnerOffer;
-
-                // add a record new customer subscription transaction for the current line item
-                persistenceTransactions.Add(new RecordNewCustomerSubscription(
-                    CustomerSubscriptionsRepository,
-                    new CustomerSubscriptionEntity(CustomerId, orderLineItem.SubscriptionId, matchingPartnerOffer.Id, rightNow.AddYears(1))));
-
-                // add a record purchase history for the current line item
-                persistenceTransactions.Add(new RecordPurchase(
-                    CustomerPurchasesRepository,
-                    new CustomerPurchaseEntity(CommerceOperationType.NewPurchase, Guid.NewGuid().ToString(), CustomerId, orderLineItem.SubscriptionId, orderLineItem.Quantity, matchingPartnerOffer.Price, rightNow)));
-
-                // build the transaction result line item
-                transactionResultLineItems.Add(new TransactionResultLineItem(
-                    orderLineItem.SubscriptionId,
-                    matchingPartnerOffer.Id,
-                    orderLineItem.Quantity,
-                    matchingPartnerOffer.Price,
-                    matchingPartnerOffer.Price * orderLineItem.Quantity));
+                throw new PartnerDomainException(ErrorCode.InvalidInput, Resources.InvalidOperationForOrderMessage).AddDetail("Field", "OperationType");
             }
 
-            // bundle up all the transactions together
-            bulkSubscriptionPersistenceTransaction = new SequentialAggregateTransaction(persistenceTransactions);
+            // create result order object prefilling it with operation type & customer id.
+            OrderViewModel orderResult = new OrderViewModel()
+            {
+                CustomerId = order.CustomerId,
+                OrderId = order.OrderId,
+                OperationType = order.OperationType
+            };
 
-            // execute it!
-            await bulkSubscriptionPersistenceTransaction.ExecuteAsync().ConfigureAwait(false);
+            order.Subscriptions.AssertNotNull(nameof(order.Subscriptions));
+            List<OrderSubscriptionItemViewModel> orderSubscriptions = order.Subscriptions.ToList();
 
-            // store the reuslting transaction line items
-            Result = transactionResultLineItems;
+            if (orderSubscriptions.Count != 1)
+            {
+                throw new PartnerDomainException(ErrorCode.InvalidInput, Resources.MoreThanOneSubscriptionUpdateErrorMessage);
+            }
+
+            string subscriptionId = orderSubscriptions.First().SubscriptionId;
+            subscriptionId.AssertNotEmpty(nameof(subscriptionId)); // is Required for the commerce operation.             
+
+            // grab the customer subscription from our store
+            CustomerSubscriptionEntity subscriptionToAugment = await GetSubscriptionAsync(subscriptionId, order.CustomerId).ConfigureAwait(false);
+
+            // retrieve the partner offer this subscription relates to, we need to know the current price
+            PartnerOffer partnerOffer = await ApplicationDomain.Instance.OffersRepository.RetrieveAsync(subscriptionToAugment.PartnerOfferId).ConfigureAwait(false);
+
+            if (partnerOffer.IsInactive)
+            {
+                // renewing deleted offers is prohibited
+                throw new PartnerDomainException(ErrorCode.PurchaseDeletedOfferNotAllowed).AddDetail("Id", partnerOffer.Id);
+            }
+
+            // retrieve the subscription from Partner Center
+            Subscriptions.ISubscription subscriptionOperations = ApplicationDomain.Instance.PartnerCenterClient.Customers.ById(order.CustomerId).Subscriptions.ById(subscriptionId);
+            PartnerCenter.Models.Subscriptions.Subscription partnerCenterSubscription = await subscriptionOperations.GetAsync().ConfigureAwait(false);
+
+            List<OrderSubscriptionItemViewModel> resultOrderSubscriptions = new List<OrderSubscriptionItemViewModel>
+            {
+                new OrderSubscriptionItemViewModel()
+                {
+                    OfferId = subscriptionId,
+                    SubscriptionId = subscriptionId,
+                    PartnerOfferId = subscriptionToAugment.PartnerOfferId,
+                    SubscriptionExpiryDate = subscriptionToAugment.ExpiryDate,
+                    Quantity = partnerCenterSubscription.Quantity,
+                    SeatPrice = partnerOffer.Price,
+                    SubscriptionName = partnerOffer.Title
+                }
+            };
+
+            orderResult.Subscriptions = resultOrderSubscriptions;
+
+            return orderResult;
         }
 
         /// <summary>
-        /// Rollback all the inserts.
-        /// </summary>
-        /// <returns>A task.</returns>
-        public async Task RollbackAsync()
+        /// Normalizes an order to purchase net new subscriptions.
+        /// </summary>        
+        /// <returns>Normalized order.</returns>
+        public async Task<OrderViewModel> NormalizePurchaseSubscriptionOrderAsync()
         {
-            if (bulkSubscriptionPersistenceTransaction != null)
+            OrderViewModel order = Order;
+            order.CustomerId.AssertNotEmpty(nameof(order.CustomerId));
+            if (order.OperationType != CommerceOperationType.NewPurchase)
             {
-                await bulkSubscriptionPersistenceTransaction.RollbackAsync().ConfigureAwait(false);
-                bulkSubscriptionPersistenceTransaction = null;
+                throw new PartnerDomainException(ErrorCode.InvalidInput, Resources.InvalidOperationForOrderMessage).AddDetail("Field", "OperationType");
             }
+
+            // create result order object prefilling it with operation type & customer id.
+            OrderViewModel orderResult = new OrderViewModel()
+            {
+                CustomerId = order.CustomerId,
+                OrderId = order.OrderId,
+                OperationType = order.OperationType
+            };
+
+            order.Subscriptions.AssertNotNull(nameof(order.Subscriptions));
+            List<OrderSubscriptionItemViewModel> orderSubscriptions = order.Subscriptions.ToList();
+            if (orderSubscriptions.Count < 1)
+            {
+                throw new Exception(Resources.NotEnoughItemsInOrderErrorMessage);
+            }
+
+            // retrieve all the partner offers to match against them
+            IEnumerable<PartnerOffer> allPartnerOffers = await ApplicationDomain.Instance.OffersRepository.RetrieveAsync().ConfigureAwait(false);
+
+            List<OrderSubscriptionItemViewModel> resultOrderSubscriptions = new List<OrderSubscriptionItemViewModel>();
+            foreach (OrderSubscriptionItemViewModel lineItem in orderSubscriptions)
+            {
+                PartnerOffer offerToPurchase = allPartnerOffers.FirstOrDefault(offer => offer.Id == lineItem.SubscriptionId);
+
+                if (offerToPurchase == null)
+                {
+                    // oops, this offer Id is unknown to us
+                    throw new PartnerDomainException(ErrorCode.PartnerOfferNotFound).AddDetail("Id", lineItem.SubscriptionId);
+                }
+                else if (offerToPurchase.IsInactive)
+                {
+                    // purchasing deleted offers is prohibited
+                    throw new PartnerDomainException(ErrorCode.PurchaseDeletedOfferNotAllowed).AddDetail("Id", offerToPurchase.Id);
+                }
+
+                // populate details for each order subscription item to purchase. 
+                resultOrderSubscriptions.Add(new OrderSubscriptionItemViewModel()
+                {
+                    OfferId = offerToPurchase.Id,
+                    SubscriptionId = offerToPurchase.Id,
+                    Quantity = lineItem.Quantity,
+                    SeatPrice = offerToPurchase.Price,
+                    SubscriptionName = offerToPurchase.Title
+                });
+            }
+
+            orderResult.Subscriptions = resultOrderSubscriptions;
+
+            return orderResult;
+        }
+
+        /// <summary>
+        /// Normalizes an order to add seats to a subscription.
+        /// </summary>        
+        /// <returns>Normalized order.</returns>
+        public async Task<OrderViewModel> NormalizePurchaseAdditionalSeatsOrderAsync()
+        {
+            OrderViewModel order = Order;
+            order.CustomerId.AssertNotEmpty(nameof(order.CustomerId));
+
+            if (order.OperationType != CommerceOperationType.AdditionalSeatsPurchase)
+            {
+                throw new PartnerDomainException(ErrorCode.InvalidInput, Resources.InvalidOperationForOrderMessage).AddDetail("Field", "OperationType");
+            }
+
+            // create result order object prefilling it with operation type & customer id.
+            OrderViewModel orderResult = new OrderViewModel()
+            {
+                CustomerId = order.CustomerId,
+                OrderId = order.OrderId,
+                OperationType = order.OperationType
+            };
+
+            order.Subscriptions.AssertNotNull(nameof(order.Subscriptions));
+            List<OrderSubscriptionItemViewModel> orderSubscriptions = order.Subscriptions.ToList();
+
+            if (orderSubscriptions.Count != 1)
+            {
+                throw new PartnerDomainException(ErrorCode.InvalidInput).AddDetail("ErrorMessage", Resources.MoreThanOneSubscriptionUpdateErrorMessage);
+            }
+
+            string subscriptionId = orderSubscriptions.First().SubscriptionId;
+            int seatsToPurchase = orderSubscriptions.First().Quantity;
+            subscriptionId.AssertNotEmpty(nameof(subscriptionId)); // is Required for the commerce operation.             
+            seatsToPurchase.AssertPositive("seatsToPurchase");
+
+            // grab the customer subscription from our store
+            CustomerSubscriptionEntity subscriptionToAugment = await GetSubscriptionAsync(subscriptionId, order.CustomerId).ConfigureAwait(false);
+
+            // retrieve the partner offer this subscription relates to, we need to know the current price
+            PartnerOffer partnerOffer = await ApplicationDomain.Instance.OffersRepository.RetrieveAsync(subscriptionToAugment.PartnerOfferId).ConfigureAwait(false);
+
+            if (partnerOffer.IsInactive)
+            {
+                // renewing deleted offers is prohibited
+                throw new PartnerDomainException(ErrorCode.PurchaseDeletedOfferNotAllowed).AddDetail("Id", partnerOffer.Id);
+            }
+
+            // retrieve the subscription from Partner Center
+            Subscriptions.ISubscription subscriptionOperations = ApplicationDomain.Instance.PartnerCenterClient.Customers.ById(order.CustomerId).Subscriptions.ById(subscriptionId);
+
+            // if subscription expiry date.Date is less than today's UTC date then subcription has expired. 
+            if (subscriptionToAugment.ExpiryDate.Date < DateTime.UtcNow.Date)
+            {
+                // this subscription has already expired, don't permit adding seats until the subscription is renewed
+                throw new PartnerDomainException(ErrorCode.SubscriptionExpired);
+            }
+
+            BrandingConfiguration portalBranding = await ApplicationDomain.Instance.PortalBranding.RetrieveAsync().ConfigureAwait(false);
+
+            decimal proratedSeatCharge = Math.Round(CommerceOperations.CalculateProratedSeatCharge(subscriptionToAugment.ExpiryDate,
+                                                                                                   partnerOffer.Price, 
+                                                                                                   portalBranding.BillingCycle), 
+                                                    Resources.Culture.NumberFormat.CurrencyDecimalDigits);
+            //decimal totalCharge = Math.Round(proratedSeatCharge * seatsToPurchase, Resources.Culture.NumberFormat.CurrencyDecimalDigits);
+
+            List<OrderSubscriptionItemViewModel> resultOrderSubscriptions = new List<OrderSubscriptionItemViewModel>
+            {
+                new OrderSubscriptionItemViewModel()
+                {
+                    OfferId = subscriptionId,
+                    SubscriptionId = subscriptionId,
+                    PartnerOfferId = subscriptionToAugment.PartnerOfferId,
+                    SubscriptionExpiryDate = subscriptionToAugment.ExpiryDate,
+                    Quantity = seatsToPurchase,
+                    SeatPrice = proratedSeatCharge,
+                    SubscriptionName = partnerOffer.Title
+                }
+            };
+
+            orderResult.Subscriptions = resultOrderSubscriptions;
+
+            return orderResult;
+        }
+
+        /// <summary>
+        /// Retrieves a customer subscription from persistence.
+        /// </summary>
+        /// <param name="subscriptionId">The subscription ID.</param>
+        /// <param name="customerId">The customer ID.</param>
+        /// <returns>The matching subscription.</returns>
+        private static async Task<CustomerSubscriptionEntity> GetSubscriptionAsync(string subscriptionId, string customerId)
+        {
+            // grab the customer subscription from our store
+            IEnumerable<CustomerSubscriptionEntity> customerSubscriptions = await ApplicationDomain.Instance.CustomerSubscriptionsRepository.RetrieveAsync(customerId).ConfigureAwait(false);
+            CustomerSubscriptionEntity subscriptionToAugment = customerSubscriptions.FirstOrDefault(subscription => subscription.SubscriptionId == subscriptionId);
+
+            if (subscriptionToAugment == null)
+            {
+                throw new PartnerDomainException(ErrorCode.SubscriptionNotFound);
+            }
+
+            return subscriptionToAugment;
         }
     }
 }
